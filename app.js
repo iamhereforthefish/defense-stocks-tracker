@@ -17,8 +17,8 @@ const STOCKS = [
     { ticker: 'AM.PA', company: 'Dassault Aviation (Paris)' }
 ];
 
-// CORS proxy for Yahoo Finance requests
-const CORS_PROXY = 'https://corsproxy.io/?';
+// CORS proxy for Yahoo Finance requests (allorigins wraps response in {contents: ...})
+const CORS_PROXY = 'https://api.allorigins.win/get?url=';
 
 // Performance periods
 const PERIODS = ['1d', '1w', '3m', '12m', 'ytd'];
@@ -74,12 +74,15 @@ async function fetchAllStockData() {
 async function fetchStockPerformance(ticker) {
     try {
         // Fetch 1 year of daily data
-        const url = `${CORS_PROXY}${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`)}`;
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`;
+        const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
 
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-        const data = await response.json();
+        // allorigins wraps response in {contents: "..."}
+        const wrapper = await response.json();
+        const data = JSON.parse(wrapper.contents);
 
         if (!data.chart?.result?.[0]) {
             console.error(`No data for ${ticker}`);
@@ -310,12 +313,15 @@ async function fetchPerformanceSinceDate(ticker, targetDate) {
     const period1 = Math.floor(targetDate.getTime() / 1000);
     const period2 = Math.floor(now.getTime() / 1000);
 
-    const url = `${CORS_PROXY}${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d`)}`;
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d`;
+    const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
 
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    const data = await response.json();
+    // allorigins wraps response in {contents: "..."}
+    const wrapper = await response.json();
+    const data = JSON.parse(wrapper.contents);
 
     if (!data.chart?.result?.[0]) {
         throw new Error('No data');
