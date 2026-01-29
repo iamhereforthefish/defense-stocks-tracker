@@ -39,16 +39,15 @@
                 </div>
 
                 <div class="table-actions">
-                    <button class="action-btn save-btn" onclick="saveData()">Save Data</button>
-                    <button class="action-btn clear-btn" onclick="clearData()">Clear All</button>
+                    <button class="action-btn refresh-btn" onclick="fetchAllStockData()">Refresh Data</button>
                     <span id="save-status" class="save-status"></span>
                 </div>
             </section>
 
             <!-- Custom Date Performance -->
             <section class="custom-date-section">
-                <h2>Performance on Specific Date</h2>
-                <p class="section-hint">Enter performance data for a specific date</p>
+                <h2>Performance Since Specific Date</h2>
+                <p class="section-hint">Calculate performance from a specific date to today</p>
 
                 <div class="date-input-row">
                     <div class="date-group">
@@ -63,11 +62,11 @@
                         <label for="custom-year">Year</label>
                         <input type="number" id="custom-year" min="2000" max="2100" placeholder="YYYY">
                     </div>
-                    <button class="action-btn add-date-btn" onclick="addCustomDate()">Add Date</button>
+                    <button class="action-btn add-date-btn" onclick="fetchCustomDatePerformance()">Calculate</button>
                 </div>
 
                 <div class="custom-dates-container" id="custom-dates-container">
-                    <!-- Custom date tables will be added here -->
+                    <!-- Custom date results will appear here -->
                 </div>
             </section>
         </main>

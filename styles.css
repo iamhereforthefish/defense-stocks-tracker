@@ -118,31 +118,25 @@ section h2 {
     font-size: 0.9rem;
 }
 
-.performance-table input {
-    width: 80px;
-    padding: 0.5rem;
-    border: 1px solid var(--teal);
-    border-radius: 4px;
+.performance-table .perf-cell {
     font-family: Arial, sans-serif;
     font-size: 0.95rem;
     text-align: right;
-    background: var(--light-gray);
+    font-weight: 600;
 }
 
-.performance-table input:focus {
-    outline: none;
-    border-color: var(--dark-blue);
-    background: var(--white);
-}
-
-.performance-table input.positive {
+.performance-table .perf-cell.positive {
     color: #047857;
-    font-weight: 600;
 }
 
-.performance-table input.negative {
+.performance-table .perf-cell.negative {
     color: var(--red);
-    font-weight: 600;
+}
+
+.performance-table .perf-cell.error {
+    color: #999;
+    font-style: italic;
+    font-weight: 400;
 }
 
 /* Table Actions */
@@ -168,22 +162,13 @@ section h2 {
     transform: translateY(-2px);
 }
 
-.save-btn {
+.refresh-btn {
     background: var(--dark-blue);
     color: var(--white);
 }
 
-.save-btn:hover {
+.refresh-btn:hover {
     box-shadow: 0 4px 12px rgba(15, 42, 54, 0.4);
-}
-
-.clear-btn {
-    background: var(--red);
-    color: var(--white);
-}
-
-.clear-btn:hover {
-    box-shadow: 0 4px 12px rgba(248, 19, 14, 0.4);
 }
 
 .add-date-btn {
@@ -202,6 +187,10 @@ section h2 {
 
 .save-status.error {
     color: var(--red);
+}
+
+.save-status.loading {
+    color: var(--dark-blue);
 }
 
 /* Custom Date Section */
@@ -308,31 +297,30 @@ section h2 {
     color: var(--dark-blue);
 }
 
-.custom-date-table input {
-    width: 100px;
-    padding: 0.5rem;
-    border: 1px solid var(--teal);
-    border-radius: 4px;
-    font-family: Arial, sans-serif;
-    font-size: 0.95rem;
+.custom-date-table .perf-cell {
     text-align: right;
-    background: var(--light-gray);
+    font-weight: 600;
 }
 
-.custom-date-table input:focus {
-    outline: none;
-    border-color: var(--dark-blue);
-    background: var(--white);
-}
-
-.custom-date-table input.positive {
+.custom-date-table .perf-cell.positive {
     color: #047857;
-    font-weight: 600;
 }
 
-.custom-date-table input.negative {
+.custom-date-table .perf-cell.negative {
     color: var(--red);
-    font-weight: 600;
+}
+
+.custom-date-table .perf-cell.error {
+    color: #999;
+    font-style: italic;
+    font-weight: 400;
+}
+
+.loading-message {
+    padding: 2rem;
+    text-align: center;
+    color: var(--dark-blue);
+    font-style: italic;
 }
 
 /* Footer */

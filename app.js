@@ -1,21 +1,24 @@
 /**
  * European Defense Stocks Tracker
- * Manual performance tracking for European defense companies
+ * Auto-populated performance data from Yahoo Finance
  */
 
-// Stock definitions
+// Stock definitions with Yahoo Finance tickers
 const STOCKS = [
-    { ticker: 'BAES.L', company: 'BAE Systems (London)' },
-    { ticker: 'RHM', company: 'Rheinmetall (Germany)' },
-    { ticker: 'LDOF.MI', company: 'Leonardo (Milan)' },
-    { ticker: 'TCFP.PA', company: 'Thales (Paris)' },
+    { ticker: 'BA.L', company: 'BAE Systems (London)' },
+    { ticker: 'RHM.DE', company: 'Rheinmetall (Germany)' },
+    { ticker: 'LDO.MI', company: 'Leonardo (Milan)' },
+    { ticker: 'HO.PA', company: 'Thales (Paris)' },
     { ticker: 'RR.L', company: 'Rolls-Royce (London)' },
-    { ticker: 'SAABb.ST', company: 'SAAB (Stockholm)' },
+    { ticker: 'SAAB-B.ST', company: 'SAAB (Stockholm)' },
     { ticker: 'AIR.PA', company: 'Airbus (Paris)' },
     { ticker: 'SAF.PA', company: 'Safran (Paris)' },
-    { ticker: 'MTXGn.DE', company: 'MTU Aero Engines (Germany)' },
+    { ticker: 'MTX.DE', company: 'MTU Aero Engines (Germany)' },
     { ticker: 'AM.PA', company: 'Dassault Aviation (Paris)' }
 ];
+
+// CORS proxy for Yahoo Finance requests
+const CORS_PROXY = 'https://corsproxy.io/?';
 
 // Performance periods
 const PERIODS = ['1d', '1w', '3m', '12m', 'ytd'];
@@ -30,6 +33,7 @@ const PERIOD_LABELS = {
 // Data storage
 let performanceData = {};
 let customDates = [];
+let isLoading = false;
 
 /**
  * Initialize the application
@@ -37,7 +41,179 @@ let customDates = [];
 function init() {
     loadData();
     buildPerformanceTable();
-    renderCustomDates();
+    // Auto-fetch data on load
+    fetchAllStockData();
+}
+
+/**
+ * Fetch performance data for all stocks from Yahoo Finance
+ */
+async function fetchAllStockData() {
+    if (isLoading) return;
+    isLoading = true;
+
+    showSaveStatus('Fetching stock data...', 'loading');
+
+    for (const stock of STOCKS) {
+        try {
+            await fetchStockPerformance(stock.ticker);
+            // Small delay to avoid rate limiting
+            await sleep(300);
+        } catch (error) {
+            console.error(`Error fetching ${stock.ticker}:`, error);
+        }
+    }
+
+    isLoading = false;
+    showSaveStatus('Data updated!', 'success');
+}
+
+/**
+ * Fetch performance data for a single stock
+ */
+async function fetchStockPerformance(ticker) {
+    try {
+        // Fetch 1 year of daily data
+        const url = `${CORS_PROXY}${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`)}`;
+
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const data = await response.json();
+
+        if (!data.chart?.result?.[0]) {
+            console.error(`No data for ${ticker}`);
+            return;
+        }
+
+        const result = data.chart.result[0];
+        const quotes = result.indicators.quote[0];
+        const timestamps = result.timestamp;
+        const closes = quotes.close;
+
+        if (!closes || closes.length === 0) return;
+
+        // Get current price (most recent close)
+        const currentPrice = closes[closes.length - 1];
+
+        // Calculate performance for each period
+        const performance = calculatePerformance(timestamps, closes, currentPrice);
+
+        // Update the UI
+        updateStockRow(ticker, performance);
+
+        // Store data
+        performanceData[ticker] = performance;
+
+    } catch (error) {
+        console.error(`Failed to fetch ${ticker}:`, error);
+        // Mark as error in UI
+        updateStockRowError(ticker);
+    }
+}
+
+/**
+ * Calculate performance for different time periods
+ */
+function calculatePerformance(timestamps, closes, currentPrice) {
+    const now = Date.now() / 1000; // Current timestamp in seconds
+    const performance = {};
+
+    // Find prices at different points in time
+    const periods = {
+        '1d': 1,
+        '1w': 7,
+        '3m': 90,
+        '12m': 365,
+        'ytd': null // Special case
+    };
+
+    for (const [period, days] of Object.entries(periods)) {
+        let targetTimestamp;
+
+        if (period === 'ytd') {
+            // Start of current year
+            const startOfYear = new Date(new Date().getFullYear(), 0, 1);
+            targetTimestamp = startOfYear.getTime() / 1000;
+        } else {
+            targetTimestamp = now - (days * 24 * 60 * 60);
+        }
+
+        // Find the closest price to the target date
+        const historicalPrice = findClosestPrice(timestamps, closes, targetTimestamp);
+
+        if (historicalPrice && currentPrice) {
+            const change = ((currentPrice - historicalPrice) / historicalPrice) * 100;
+            performance[period] = change;
+        } else {
+            performance[period] = null;
+        }
+    }
+
+    return performance;
+}
+
+/**
+ * Find the closest price to a target timestamp
+ */
+function findClosestPrice(timestamps, closes, targetTimestamp) {
+    let closestIndex = -1;
+    let closestDiff = Infinity;
+
+    for (let i = 0; i < timestamps.length; i++) {
+        const diff = Math.abs(timestamps[i] - targetTimestamp);
+        if (diff < closestDiff && closes[i] !== null) {
+            closestDiff = diff;
+            closestIndex = i;
+        }
+    }
+
+    // Only return if within 5 days of target
+    if (closestIndex >= 0 && closestDiff < 5 * 24 * 60 * 60) {
+        return closes[closestIndex];
+    }
+
+    return null;
+}
+
+/**
+ * Update a stock row with performance data
+ */
+function updateStockRow(ticker, performance) {
+    PERIODS.forEach(period => {
+        const cell = document.getElementById(`perf-${ticker}-${period}`);
+        if (cell) {
+            const value = performance[period];
+            if (value !== null && value !== undefined) {
+                const formatted = (value >= 0 ? '+' : '') + value.toFixed(2) + '%';
+                cell.textContent = formatted;
+                cell.className = 'perf-cell ' + (value >= 0 ? 'positive' : 'negative');
+            } else {
+                cell.textContent = '--';
+                cell.className = 'perf-cell';
+            }
+        }
+    });
+}
+
+/**
+ * Update a stock row to show error state
+ */
+function updateStockRowError(ticker) {
+    PERIODS.forEach(period => {
+        const cell = document.getElementById(`perf-${ticker}-${period}`);
+        if (cell) {
+            cell.textContent = 'Error';
+            cell.className = 'perf-cell error';
+        }
+    });
+}
+
+/**
+ * Sleep helper
+ */
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -62,38 +238,12 @@ function buildPerformanceTable() {
         companyCell.textContent = stock.company;
         row.appendChild(companyCell);
 
-        // Performance cells
+        // Performance cells (read-only, populated by API)
         PERIODS.forEach(period => {
             const cell = document.createElement('td');
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.id = `perf-${stock.ticker}-${period}`;
-            input.placeholder = '--%';
-
-            // Load saved value
-            const savedValue = performanceData[stock.ticker]?.[period];
-            if (savedValue !== undefined && savedValue !== '') {
-                input.value = savedValue;
-                applyColorClass(input, savedValue);
-            }
-
-            // Event listeners
-            input.addEventListener('input', () => {
-                applyColorClass(input, input.value);
-            });
-
-            input.addEventListener('blur', () => {
-                formatPercentage(input);
-                savePerformanceValue(stock.ticker, period, input.value);
-            });
-
-            input.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    input.blur();
-                }
-            });
-
-            cell.appendChild(input);
+            cell.id = `perf-${stock.ticker}-${period}`;
+            cell.className = 'perf-cell';
+            cell.textContent = 'Loading...';
             row.appendChild(cell);
         });
 
@@ -102,121 +252,9 @@ function buildPerformanceTable() {
 }
 
 /**
- * Apply color class based on value
+ * Fetch performance since a custom date
  */
-function applyColorClass(input, value) {
-    const numValue = parseFloat(value.replace('%', ''));
-    input.classList.remove('positive', 'negative');
-
-    if (!isNaN(numValue)) {
-        if (numValue > 0) {
-            input.classList.add('positive');
-        } else if (numValue < 0) {
-            input.classList.add('negative');
-        }
-    }
-}
-
-/**
- * Format value as percentage
- */
-function formatPercentage(input) {
-    let value = input.value.trim();
-    if (value === '' || value === '-') return;
-
-    // Remove existing % sign
-    value = value.replace('%', '');
-
-    const numValue = parseFloat(value);
-    if (!isNaN(numValue)) {
-        // Format with sign and %
-        const formatted = (numValue > 0 ? '+' : '') + numValue.toFixed(2) + '%';
-        input.value = formatted;
-        applyColorClass(input, formatted);
-    }
-}
-
-/**
- * Save a performance value
- */
-function savePerformanceValue(ticker, period, value) {
-    if (!performanceData[ticker]) {
-        performanceData[ticker] = {};
-    }
-    performanceData[ticker][period] = value;
-}
-
-/**
- * Save all data to localStorage
- */
-function saveData() {
-    // Collect all current values from inputs
-    STOCKS.forEach(stock => {
-        PERIODS.forEach(period => {
-            const input = document.getElementById(`perf-${stock.ticker}-${period}`);
-            if (input) {
-                savePerformanceValue(stock.ticker, period, input.value);
-            }
-        });
-    });
-
-    // Save to localStorage
-    localStorage.setItem('defenseStocksPerformance', JSON.stringify(performanceData));
-    localStorage.setItem('defenseStocksCustomDates', JSON.stringify(customDates));
-
-    showSaveStatus('Data saved!', 'success');
-}
-
-/**
- * Load data from localStorage
- */
-function loadData() {
-    const savedPerformance = localStorage.getItem('defenseStocksPerformance');
-    const savedCustomDates = localStorage.getItem('defenseStocksCustomDates');
-
-    if (savedPerformance) {
-        performanceData = JSON.parse(savedPerformance);
-    }
-
-    if (savedCustomDates) {
-        customDates = JSON.parse(savedCustomDates);
-    }
-}
-
-/**
- * Clear all data
- */
-function clearData() {
-    if (!confirm('Are you sure you want to clear all data?')) return;
-
-    performanceData = {};
-    customDates = [];
-    localStorage.removeItem('defenseStocksPerformance');
-    localStorage.removeItem('defenseStocksCustomDates');
-
-    buildPerformanceTable();
-    renderCustomDates();
-    showSaveStatus('Data cleared', 'success');
-}
-
-/**
- * Show save status message
- */
-function showSaveStatus(message, type) {
-    const statusEl = document.getElementById('save-status');
-    statusEl.textContent = message;
-    statusEl.className = 'save-status ' + type;
-
-    setTimeout(() => {
-        statusEl.textContent = '';
-        statusEl.className = 'save-status';
-    }, 3000);
-}
-
-/**
- * Add a custom date for tracking
- */
-function addCustomDate() {
+async function fetchCustomDatePerformance() {
     const dayInput = document.getElementById('custom-day');
     const monthInput = document.getElementById('custom-month');
     const yearInput = document.getElementById('custom-year');
@@ -236,31 +274,154 @@ function addCustomDate() {
         return;
     }
 
-    // Format date string
-    const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const targetDate = new Date(year, month - 1, day);
     const dateDisplay = `${day} ${getMonthName(month)} ${year}`;
 
-    // Check if date already exists
-    if (customDates.find(d => d.key === dateKey)) {
-        alert('This date has already been added');
-        return;
+    // Show loading
+    const container = document.getElementById('custom-dates-container');
+    container.innerHTML = `<div class="custom-date-card">
+        <div class="custom-date-header">
+            <h3>Performance since ${dateDisplay}</h3>
+        </div>
+        <div class="loading-message">Fetching data...</div>
+    </div>`;
+
+    // Fetch data for each stock
+    const results = [];
+    for (const stock of STOCKS) {
+        try {
+            const perf = await fetchPerformanceSinceDate(stock.ticker, targetDate);
+            results.push({ ticker: stock.ticker, company: stock.company, performance: perf });
+            await sleep(300);
+        } catch (error) {
+            results.push({ ticker: stock.ticker, company: stock.company, performance: null, error: true });
+        }
     }
 
-    // Add date
-    customDates.push({
-        key: dateKey,
-        display: dateDisplay,
-        data: {}
-    });
+    // Display results
+    displayCustomDateResults(dateDisplay, results);
+}
 
-    // Clear inputs
-    dayInput.value = '';
-    monthInput.value = '';
-    yearInput.value = '';
+/**
+ * Fetch performance since a specific date
+ */
+async function fetchPerformanceSinceDate(ticker, targetDate) {
+    const now = new Date();
+    const period1 = Math.floor(targetDate.getTime() / 1000);
+    const period2 = Math.floor(now.getTime() / 1000);
 
-    // Re-render and save
-    renderCustomDates();
-    saveData();
+    const url = `${CORS_PROXY}${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d`)}`;
+
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+
+    if (!data.chart?.result?.[0]) {
+        throw new Error('No data');
+    }
+
+    const result = data.chart.result[0];
+    const closes = result.indicators.quote[0].close;
+
+    if (!closes || closes.length < 2) {
+        throw new Error('Insufficient data');
+    }
+
+    // Find first valid close and last valid close
+    let firstPrice = null;
+    let lastPrice = null;
+
+    for (let i = 0; i < closes.length; i++) {
+        if (closes[i] !== null) {
+            firstPrice = closes[i];
+            break;
+        }
+    }
+
+    for (let i = closes.length - 1; i >= 0; i--) {
+        if (closes[i] !== null) {
+            lastPrice = closes[i];
+            break;
+        }
+    }
+
+    if (firstPrice && lastPrice) {
+        return ((lastPrice - firstPrice) / firstPrice) * 100;
+    }
+
+    return null;
+}
+
+/**
+ * Display custom date results
+ */
+function displayCustomDateResults(dateDisplay, results) {
+    const container = document.getElementById('custom-dates-container');
+
+    let tableRows = results.map(r => {
+        let perfDisplay = '--';
+        let perfClass = '';
+
+        if (r.error) {
+            perfDisplay = 'Error';
+            perfClass = 'error';
+        } else if (r.performance !== null) {
+            perfDisplay = (r.performance >= 0 ? '+' : '') + r.performance.toFixed(2) + '%';
+            perfClass = r.performance >= 0 ? 'positive' : 'negative';
+        }
+
+        return `<tr>
+            <td class="ticker">${r.ticker}</td>
+            <td class="company">${r.company}</td>
+            <td class="perf-cell ${perfClass}">${perfDisplay}</td>
+        </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="custom-date-card">
+            <div class="custom-date-header">
+                <h3>Performance since ${dateDisplay}</h3>
+            </div>
+            <table class="custom-date-table">
+                <thead>
+                    <tr>
+                        <th>Ticker</th>
+                        <th>Company</th>
+                        <th>Performance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${tableRows}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+/**
+ * Load data from localStorage (for caching)
+ */
+function loadData() {
+    const savedPerformance = localStorage.getItem('defenseStocksPerformance');
+
+    if (savedPerformance) {
+        performanceData = JSON.parse(savedPerformance);
+    }
+}
+
+/**
+ * Show save status message
+ */
+function showSaveStatus(message, type) {
+    const statusEl = document.getElementById('save-status');
+    statusEl.textContent = message;
+    statusEl.className = 'save-status ' + type;
+
+    setTimeout(() => {
+        statusEl.textContent = '';
+        statusEl.className = 'save-status';
+    }, 3000);
 }
 
 /**
@@ -270,116 +431,6 @@ function getMonthName(month) {
     const months = ['January', 'February', 'March', 'April', 'May', 'June',
                     'July', 'August', 'September', 'October', 'November', 'December'];
     return months[month - 1];
-}
-
-/**
- * Render custom date tables
- */
-function renderCustomDates() {
-    const container = document.getElementById('custom-dates-container');
-    container.innerHTML = '';
-
-    customDates.forEach((dateObj, index) => {
-        const card = document.createElement('div');
-        card.className = 'custom-date-card';
-
-        // Header
-        const header = document.createElement('div');
-        header.className = 'custom-date-header';
-        header.innerHTML = `
-            <h3>Performance on ${dateObj.display}</h3>
-            <button class="remove-date-btn" onclick="removeCustomDate(${index})">Remove</button>
-        `;
-        card.appendChild(header);
-
-        // Table
-        const table = document.createElement('table');
-        table.className = 'custom-date-table';
-
-        // Table header
-        const thead = document.createElement('thead');
-        thead.innerHTML = `
-            <tr>
-                <th>Ticker</th>
-                <th>Company</th>
-                <th>Performance</th>
-            </tr>
-        `;
-        table.appendChild(thead);
-
-        // Table body
-        const tbody = document.createElement('tbody');
-        STOCKS.forEach(stock => {
-            const row = document.createElement('tr');
-
-            const tickerCell = document.createElement('td');
-            tickerCell.className = 'ticker';
-            tickerCell.textContent = stock.ticker;
-            row.appendChild(tickerCell);
-
-            const companyCell = document.createElement('td');
-            companyCell.className = 'company';
-            companyCell.textContent = stock.company;
-            row.appendChild(companyCell);
-
-            const perfCell = document.createElement('td');
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.id = `custom-${dateObj.key}-${stock.ticker}`;
-            input.placeholder = '--%';
-
-            // Load saved value
-            const savedValue = dateObj.data[stock.ticker];
-            if (savedValue !== undefined && savedValue !== '') {
-                input.value = savedValue;
-                applyColorClass(input, savedValue);
-            }
-
-            // Event listeners
-            input.addEventListener('input', () => {
-                applyColorClass(input, input.value);
-            });
-
-            input.addEventListener('blur', () => {
-                formatPercentage(input);
-                saveCustomDateValue(index, stock.ticker, input.value);
-            });
-
-            input.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    input.blur();
-                }
-            });
-
-            perfCell.appendChild(input);
-            row.appendChild(perfCell);
-            tbody.appendChild(row);
-        });
-
-        table.appendChild(tbody);
-        card.appendChild(table);
-        container.appendChild(card);
-    });
-}
-
-/**
- * Save a custom date value
- */
-function saveCustomDateValue(dateIndex, ticker, value) {
-    if (customDates[dateIndex]) {
-        customDates[dateIndex].data[ticker] = value;
-    }
-}
-
-/**
- * Remove a custom date
- */
-function removeCustomDate(index) {
-    if (!confirm('Remove this date and all its data?')) return;
-
-    customDates.splice(index, 1);
-    renderCustomDates();
-    saveData();
 }
 
 // Initialize on page load
