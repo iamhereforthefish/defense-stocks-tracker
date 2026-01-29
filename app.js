@@ -17,8 +17,8 @@ const STOCKS = [
     { ticker: 'AM.PA', company: 'Dassault Aviation (Paris)' }
 ];
 
-// CORS proxy for Yahoo Finance requests (allorigins wraps response in {contents: ...})
-const CORS_PROXY = 'https://api.allorigins.win/get?url=';
+// CORS proxy for Yahoo Finance requests (raw returns unwrapped data)
+const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
 
 // Performance periods
 const PERIODS = ['1d', '1w', '3m', '12m', 'ytd'];
@@ -70,37 +70,67 @@ async function fetchAllStockData() {
 
 /**
  * Fetch performance data for a single stock
+ * Makes multiple requests for different time periods since large ranges fail via proxy
  */
 async function fetchStockPerformance(ticker) {
     try {
-        // Fetch 1 year of daily data
-        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`;
-        const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
+        const performance = {};
 
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        // allorigins wraps response in {contents: "..."}
-        const wrapper = await response.json();
-        const data = JSON.parse(wrapper.contents);
-
-        if (!data.chart?.result?.[0]) {
-            console.error(`No data for ${ticker}`);
+        // Fetch 1 month data for 1d, 1w, and partial 3m
+        const data1m = await fetchYahooData(ticker, '1mo');
+        if (!data1m) {
+            updateStockRowError(ticker);
             return;
         }
 
-        const result = data.chart.result[0];
-        const quotes = result.indicators.quote[0];
-        const timestamps = result.timestamp;
-        const closes = quotes.close;
+        const { timestamps: ts1m, closes: cl1m } = data1m;
+        const currentPrice = cl1m[cl1m.length - 1];
 
-        if (!closes || closes.length === 0) return;
+        // Calculate 1d performance
+        if (cl1m.length >= 2) {
+            const prevClose = cl1m[cl1m.length - 2];
+            performance['1d'] = ((currentPrice - prevClose) / prevClose) * 100;
+        }
 
-        // Get current price (most recent close)
-        const currentPrice = closes[closes.length - 1];
+        // Calculate 1w performance (5 trading days back)
+        if (cl1m.length >= 6) {
+            const weekAgoPrice = cl1m[cl1m.length - 6];
+            performance['1w'] = ((currentPrice - weekAgoPrice) / weekAgoPrice) * 100;
+        }
 
-        // Calculate performance for each period
-        const performance = calculatePerformance(timestamps, closes, currentPrice);
+        // For 3m, 12m, and YTD - fetch using period parameters
+        const now = Math.floor(Date.now() / 1000);
+
+        // 3 month
+        const threeMonthsAgo = now - (90 * 24 * 60 * 60);
+        const data3m = await fetchYahooDataByPeriod(ticker, threeMonthsAgo, now);
+        if (data3m && data3m.closes.length > 0) {
+            const firstPrice = data3m.closes.find(p => p !== null);
+            if (firstPrice) {
+                performance['3m'] = ((currentPrice - firstPrice) / firstPrice) * 100;
+            }
+        }
+
+        // 12 month
+        const oneYearAgo = now - (365 * 24 * 60 * 60);
+        const data12m = await fetchYahooDataByPeriod(ticker, oneYearAgo, now);
+        if (data12m && data12m.closes.length > 0) {
+            const firstPrice = data12m.closes.find(p => p !== null);
+            if (firstPrice) {
+                performance['12m'] = ((currentPrice - firstPrice) / firstPrice) * 100;
+            }
+        }
+
+        // YTD
+        const startOfYear = new Date(new Date().getFullYear(), 0, 1);
+        const ytdStart = Math.floor(startOfYear.getTime() / 1000);
+        const dataYtd = await fetchYahooDataByPeriod(ticker, ytdStart, now);
+        if (dataYtd && dataYtd.closes.length > 0) {
+            const firstPrice = dataYtd.closes.find(p => p !== null);
+            if (firstPrice) {
+                performance['ytd'] = ((currentPrice - firstPrice) / firstPrice) * 100;
+            }
+        }
 
         // Update the UI
         updateStockRow(ticker, performance);
@@ -110,73 +140,60 @@ async function fetchStockPerformance(ticker) {
 
     } catch (error) {
         console.error(`Failed to fetch ${ticker}:`, error);
-        // Mark as error in UI
         updateStockRowError(ticker);
     }
 }
 
 /**
- * Calculate performance for different time periods
+ * Fetch Yahoo Finance data with range parameter
  */
-function calculatePerformance(timestamps, closes, currentPrice) {
-    const now = Date.now() / 1000; // Current timestamp in seconds
-    const performance = {};
+async function fetchYahooData(ticker, range) {
+    try {
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=${range}&interval=1d`;
+        const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
 
-    // Find prices at different points in time
-    const periods = {
-        '1d': 1,
-        '1w': 7,
-        '3m': 90,
-        '12m': 365,
-        'ytd': null // Special case
-    };
+        const response = await fetch(url);
+        if (!response.ok) return null;
 
-    for (const [period, days] of Object.entries(periods)) {
-        let targetTimestamp;
+        const data = await response.json();
 
-        if (period === 'ytd') {
-            // Start of current year
-            const startOfYear = new Date(new Date().getFullYear(), 0, 1);
-            targetTimestamp = startOfYear.getTime() / 1000;
-        } else {
-            targetTimestamp = now - (days * 24 * 60 * 60);
-        }
+        if (!data.chart?.result?.[0]) return null;
 
-        // Find the closest price to the target date
-        const historicalPrice = findClosestPrice(timestamps, closes, targetTimestamp);
-
-        if (historicalPrice && currentPrice) {
-            const change = ((currentPrice - historicalPrice) / historicalPrice) * 100;
-            performance[period] = change;
-        } else {
-            performance[period] = null;
-        }
+        const result = data.chart.result[0];
+        return {
+            timestamps: result.timestamp || [],
+            closes: result.indicators.quote[0].close || []
+        };
+    } catch (error) {
+        console.error(`fetchYahooData error for ${ticker}:`, error);
+        return null;
     }
-
-    return performance;
 }
 
 /**
- * Find the closest price to a target timestamp
+ * Fetch Yahoo Finance data with period1/period2 parameters (weekly interval to reduce data size)
  */
-function findClosestPrice(timestamps, closes, targetTimestamp) {
-    let closestIndex = -1;
-    let closestDiff = Infinity;
+async function fetchYahooDataByPeriod(ticker, period1, period2) {
+    try {
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1wk`;
+        const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
 
-    for (let i = 0; i < timestamps.length; i++) {
-        const diff = Math.abs(timestamps[i] - targetTimestamp);
-        if (diff < closestDiff && closes[i] !== null) {
-            closestDiff = diff;
-            closestIndex = i;
-        }
+        const response = await fetch(url);
+        if (!response.ok) return null;
+
+        const data = await response.json();
+
+        if (!data.chart?.result?.[0]) return null;
+
+        const result = data.chart.result[0];
+        return {
+            timestamps: result.timestamp || [],
+            closes: result.indicators.quote[0].close || []
+        };
+    } catch (error) {
+        console.error(`fetchYahooDataByPeriod error for ${ticker}:`, error);
+        return null;
     }
-
-    // Only return if within 5 days of target
-    if (closestIndex >= 0 && closestDiff < 5 * 24 * 60 * 60) {
-        return closes[closestIndex];
-    }
-
-    return null;
 }
 
 /**
@@ -313,15 +330,14 @@ async function fetchPerformanceSinceDate(ticker, targetDate) {
     const period1 = Math.floor(targetDate.getTime() / 1000);
     const period2 = Math.floor(now.getTime() / 1000);
 
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d`;
+    // Use weekly interval to reduce data size
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1wk`;
     const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
 
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    // allorigins wraps response in {contents: "..."}
-    const wrapper = await response.json();
-    const data = JSON.parse(wrapper.contents);
+    const data = await response.json();
 
     if (!data.chart?.result?.[0]) {
         throw new Error('No data');
@@ -330,7 +346,7 @@ async function fetchPerformanceSinceDate(ticker, targetDate) {
     const result = data.chart.result[0];
     const closes = result.indicators.quote[0].close;
 
-    if (!closes || closes.length < 2) {
+    if (!closes || closes.length < 1) {
         throw new Error('Insufficient data');
     }
 
