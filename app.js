@@ -58,23 +58,38 @@ async function fetchAllStockData() {
 
     showSaveStatus('Fetching stock data...', 'loading');
 
+    let successCount = 0;
+    let failCount = 0;
+
     for (const stock of STOCKS) {
         try {
-            await fetchStockPerformance(stock.ticker);
-            // Small delay to avoid rate limiting
-            await sleep(300);
+            showSaveStatus(`Fetching ${stock.ticker}...`, 'loading');
+            const success = await fetchStockPerformance(stock.ticker);
+            if (success) {
+                successCount++;
+            } else {
+                failCount++;
+            }
+            // Longer delay to avoid rate limiting
+            await sleep(800);
         } catch (error) {
             console.error(`Error fetching ${stock.ticker}:`, error);
+            failCount++;
         }
     }
 
     isLoading = false;
-    showSaveStatus('Data updated!', 'success');
+    if (failCount === 0) {
+        showSaveStatus('All data updated!', 'success');
+    } else {
+        showSaveStatus(`Updated ${successCount}/${STOCKS.length} stocks. Click Refresh to retry failed ones.`, 'success');
+    }
 }
 
 /**
  * Fetch performance data for a single stock
  * Makes multiple requests for different time periods since large ranges fail via proxy
+ * Returns true on success, false on failure
  */
 async function fetchStockPerformance(ticker) {
     try {
@@ -84,7 +99,7 @@ async function fetchStockPerformance(ticker) {
         const data1m = await fetchYahooData(ticker, '1mo');
         if (!data1m) {
             updateStockRowError(ticker);
-            return;
+            return false;
         }
 
         const { timestamps: ts1m, closes: cl1m } = data1m;
@@ -142,85 +157,99 @@ async function fetchStockPerformance(ticker) {
         // Store data
         performanceData[ticker] = performance;
 
+        return true;
+
     } catch (error) {
         console.error(`Failed to fetch ${ticker}:`, error);
         updateStockRowError(ticker);
+        return false;
     }
 }
 
 /**
- * Fetch Yahoo Finance data with range parameter - tries multiple proxies
+ * Fetch Yahoo Finance data with range parameter - tries multiple proxies with retries
  */
 async function fetchYahooData(ticker, range) {
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=${range}&interval=1d`;
+    const maxRetries = 2;
 
-    for (const proxy of CORS_PROXIES) {
-        try {
-            const url = `${proxy.url}${encodeURIComponent(yahooUrl)}`;
-            const response = await fetch(url);
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        for (const proxy of CORS_PROXIES) {
+            try {
+                const url = `${proxy.url}${encodeURIComponent(yahooUrl)}`;
+                const response = await fetch(url);
 
-            if (!response.ok) continue;
+                if (!response.ok) continue;
 
-            let data;
-            if (proxy.wrapped) {
-                const wrapper = await response.json();
-                data = JSON.parse(wrapper.contents);
-            } else {
-                data = await response.json();
+                let data;
+                if (proxy.wrapped) {
+                    const wrapper = await response.json();
+                    data = JSON.parse(wrapper.contents);
+                } else {
+                    data = await response.json();
+                }
+
+                if (!data.chart?.result?.[0]) continue;
+
+                const result = data.chart.result[0];
+                return {
+                    timestamps: result.timestamp || [],
+                    closes: result.indicators.quote[0].close || []
+                };
+            } catch (error) {
+                continue;
             }
-
-            if (!data.chart?.result?.[0]) continue;
-
-            const result = data.chart.result[0];
-            return {
-                timestamps: result.timestamp || [],
-                closes: result.indicators.quote[0].close || []
-            };
-        } catch (error) {
-            console.log(`Proxy ${proxy.url} failed for ${ticker}, trying next...`);
-            continue;
+        }
+        // Wait before retry
+        if (attempt < maxRetries - 1) {
+            await sleep(500);
         }
     }
 
-    console.error(`All proxies failed for ${ticker}`);
+    console.error(`All proxies failed for ${ticker} after ${maxRetries} attempts`);
     return null;
 }
 
 /**
- * Fetch Yahoo Finance data with period1/period2 parameters - tries multiple proxies
+ * Fetch Yahoo Finance data with period1/period2 parameters - tries multiple proxies with retries
  */
 async function fetchYahooDataByPeriod(ticker, period1, period2) {
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1wk`;
+    const maxRetries = 2;
 
-    for (const proxy of CORS_PROXIES) {
-        try {
-            const url = `${proxy.url}${encodeURIComponent(yahooUrl)}`;
-            const response = await fetch(url);
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        for (const proxy of CORS_PROXIES) {
+            try {
+                const url = `${proxy.url}${encodeURIComponent(yahooUrl)}`;
+                const response = await fetch(url);
 
-            if (!response.ok) continue;
+                if (!response.ok) continue;
 
-            let data;
-            if (proxy.wrapped) {
-                const wrapper = await response.json();
-                data = JSON.parse(wrapper.contents);
-            } else {
-                data = await response.json();
+                let data;
+                if (proxy.wrapped) {
+                    const wrapper = await response.json();
+                    data = JSON.parse(wrapper.contents);
+                } else {
+                    data = await response.json();
+                }
+
+                if (!data.chart?.result?.[0]) continue;
+
+                const result = data.chart.result[0];
+                return {
+                    timestamps: result.timestamp || [],
+                    closes: result.indicators.quote[0].close || []
+                };
+            } catch (error) {
+                continue;
             }
-
-            if (!data.chart?.result?.[0]) continue;
-
-            const result = data.chart.result[0];
-            return {
-                timestamps: result.timestamp || [],
-                closes: result.indicators.quote[0].close || []
-            };
-        } catch (error) {
-            console.log(`Proxy ${proxy.url} failed for ${ticker} period query, trying next...`);
-            continue;
+        }
+        // Wait before retry
+        if (attempt < maxRetries - 1) {
+            await sleep(500);
         }
     }
 
-    console.error(`All proxies failed for ${ticker} period query`);
     return null;
 }
 
