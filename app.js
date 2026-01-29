@@ -17,8 +17,12 @@ const STOCKS = [
     { ticker: 'AM.PA', company: 'Dassault Aviation (Paris)' }
 ];
 
-// CORS proxy for Yahoo Finance requests (raw returns unwrapped data)
-const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+// Multiple CORS proxies for redundancy
+const CORS_PROXIES = [
+    { url: 'https://api.allorigins.win/raw?url=', wrapped: false },
+    { url: 'https://api.allorigins.win/get?url=', wrapped: true },
+    { url: 'https://corsproxy.io/?', wrapped: false }
+];
 
 // Performance periods
 const PERIODS = ['1d', '1w', '3m', '12m', 'ytd'];
@@ -145,55 +149,79 @@ async function fetchStockPerformance(ticker) {
 }
 
 /**
- * Fetch Yahoo Finance data with range parameter
+ * Fetch Yahoo Finance data with range parameter - tries multiple proxies
  */
 async function fetchYahooData(ticker, range) {
-    try {
-        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=${range}&interval=1d`;
-        const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=${range}&interval=1d`;
 
-        const response = await fetch(url);
-        if (!response.ok) return null;
+    for (const proxy of CORS_PROXIES) {
+        try {
+            const url = `${proxy.url}${encodeURIComponent(yahooUrl)}`;
+            const response = await fetch(url);
 
-        const data = await response.json();
+            if (!response.ok) continue;
 
-        if (!data.chart?.result?.[0]) return null;
+            let data;
+            if (proxy.wrapped) {
+                const wrapper = await response.json();
+                data = JSON.parse(wrapper.contents);
+            } else {
+                data = await response.json();
+            }
 
-        const result = data.chart.result[0];
-        return {
-            timestamps: result.timestamp || [],
-            closes: result.indicators.quote[0].close || []
-        };
-    } catch (error) {
-        console.error(`fetchYahooData error for ${ticker}:`, error);
-        return null;
+            if (!data.chart?.result?.[0]) continue;
+
+            const result = data.chart.result[0];
+            return {
+                timestamps: result.timestamp || [],
+                closes: result.indicators.quote[0].close || []
+            };
+        } catch (error) {
+            console.log(`Proxy ${proxy.url} failed for ${ticker}, trying next...`);
+            continue;
+        }
     }
+
+    console.error(`All proxies failed for ${ticker}`);
+    return null;
 }
 
 /**
- * Fetch Yahoo Finance data with period1/period2 parameters (weekly interval to reduce data size)
+ * Fetch Yahoo Finance data with period1/period2 parameters - tries multiple proxies
  */
 async function fetchYahooDataByPeriod(ticker, period1, period2) {
-    try {
-        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1wk`;
-        const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1wk`;
 
-        const response = await fetch(url);
-        if (!response.ok) return null;
+    for (const proxy of CORS_PROXIES) {
+        try {
+            const url = `${proxy.url}${encodeURIComponent(yahooUrl)}`;
+            const response = await fetch(url);
 
-        const data = await response.json();
+            if (!response.ok) continue;
 
-        if (!data.chart?.result?.[0]) return null;
+            let data;
+            if (proxy.wrapped) {
+                const wrapper = await response.json();
+                data = JSON.parse(wrapper.contents);
+            } else {
+                data = await response.json();
+            }
 
-        const result = data.chart.result[0];
-        return {
-            timestamps: result.timestamp || [],
-            closes: result.indicators.quote[0].close || []
-        };
-    } catch (error) {
-        console.error(`fetchYahooDataByPeriod error for ${ticker}:`, error);
-        return null;
+            if (!data.chart?.result?.[0]) continue;
+
+            const result = data.chart.result[0];
+            return {
+                timestamps: result.timestamp || [],
+                closes: result.indicators.quote[0].close || []
+            };
+        } catch (error) {
+            console.log(`Proxy ${proxy.url} failed for ${ticker} period query, trying next...`);
+            continue;
+        }
     }
+
+    console.error(`All proxies failed for ${ticker} period query`);
+    return null;
 }
 
 /**
@@ -330,40 +358,26 @@ async function fetchPerformanceSinceDate(ticker, targetDate) {
     const period1 = Math.floor(targetDate.getTime() / 1000);
     const period2 = Math.floor(now.getTime() / 1000);
 
-    // Use weekly interval to reduce data size
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1wk`;
-    const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
+    const data = await fetchYahooDataByPeriod(ticker, period1, period2);
 
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const data = await response.json();
-
-    if (!data.chart?.result?.[0]) {
+    if (!data || !data.closes || data.closes.length < 1) {
         throw new Error('No data');
-    }
-
-    const result = data.chart.result[0];
-    const closes = result.indicators.quote[0].close;
-
-    if (!closes || closes.length < 1) {
-        throw new Error('Insufficient data');
     }
 
     // Find first valid close and last valid close
     let firstPrice = null;
     let lastPrice = null;
 
-    for (let i = 0; i < closes.length; i++) {
-        if (closes[i] !== null) {
-            firstPrice = closes[i];
+    for (let i = 0; i < data.closes.length; i++) {
+        if (data.closes[i] !== null) {
+            firstPrice = data.closes[i];
             break;
         }
     }
 
-    for (let i = closes.length - 1; i >= 0; i--) {
-        if (closes[i] !== null) {
-            lastPrice = closes[i];
+    for (let i = data.closes.length - 1; i >= 0; i--) {
+        if (data.closes[i] !== null) {
+            lastPrice = data.closes[i];
             break;
         }
     }
